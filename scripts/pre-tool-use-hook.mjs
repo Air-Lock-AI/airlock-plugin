@@ -56,7 +56,7 @@ async function main() {
  * Match a tool call against the local policy cache and return a human-readable hint.
  * Returns null if the call is allowed with no special conditions.
  */
-function matchPolicy(policyCache, toolName, toolInput) {
+function matchPolicy(_policyCache, _toolName, _toolInput) {
   // TODO: implement local policy matching against cached rules
   // For now, return null (no hint)
   return null;

@@ -1,0 +1,21 @@
+{
+  "name": "airlock-plugin",
+  "version": "0.1.0",
+  "description": "Airlock plugin for Claude Code",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "eslint scripts/",
+    "lint:fix": "eslint scripts/ --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "validate": "claude plugin validate ."
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
