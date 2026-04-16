@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+
+# Synced skills are runtime-generated, not checked in
+skills/*/
+!skills/.gitkeep
+
+# Local state
+*.log

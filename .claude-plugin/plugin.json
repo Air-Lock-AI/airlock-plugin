@@ -1,0 +1,13 @@
+{
+  "name": "airlock",
+  "version": "0.1.0",
+  "description": "Connect Claude Code to your APIs through Airlock — dynamic skills, approval workflows, and policy-aware tool execution.",
+  "author": {
+    "name": "Airlock",
+    "email": "support@air-lock.ai"
+  },
+  "homepage": "https://air-lock.ai",
+  "repository": "https://github.com/air-lock/airlock-plugin",
+  "license": "MIT",
+  "keywords": ["mcp", "api", "approval", "skills", "policy"]
+}

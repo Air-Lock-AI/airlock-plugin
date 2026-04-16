@@ -1,0 +1,26 @@
+{
+  "SessionStart": [
+    {
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start-hook.mjs\"",
+      "timeout": 10
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "mcp__airlock__*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use-hook.mjs\"",
+          "timeout": 3
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-hook.mjs\"",
+      "timeout": 5
+    }
+  ]
+}
