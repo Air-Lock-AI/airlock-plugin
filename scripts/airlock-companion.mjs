@@ -14,6 +14,7 @@ import { readToken, writeToken, isTokenExpired, getTokenPath } from './lib/token
 import { AirlockClient } from './lib/airlock-client.mjs';
 import { syncSkills } from './lib/skill-sync.mjs';
 import { refreshPolicyCache } from './lib/policy-cache.mjs';
+import { runOAuthPkceFlow, refreshAccessToken } from './lib/oauth-pkce.mjs';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -44,22 +45,27 @@ async function main() {
 }
 
 async function handleLogin() {
-  // TODO: Implement OAuth PKCE flow
-  // 1. Generate code_verifier + code_challenge
-  // 2. Open browser to auth.air-lock.ai/authorize with PKCE params
-  // 3. Start local HTTP server to receive the callback
-  // 4. Exchange code for tokens
-  // 5. Store token via writeToken()
-  // 6. Run initial skill sync
+  console.log('Starting Airlock login...');
 
-  console.error('OAuth PKCE login flow not yet implemented.');
-  console.error('For now, manually create ~/.airlock/token.json with:');
-  console.error('  { "accessToken": "<your-token>", "expiresAt": "<ISO-date>", "orgSlug": "<slug>" }');
-  process.exit(1);
+  const token = await runOAuthPkceFlow();
+  writeToken(token);
+  console.log(`Authenticated. Token expires at ${token.expiresAt}.`);
+
+  // Run initial skill sync
+  const client = new AirlockClient(token);
+  try {
+    const skillCount = await syncSkills(client);
+    console.log(`Synced ${skillCount} skill(s) from Airlock.`);
+    await refreshPolicyCache(client);
+  } catch (err) {
+    console.error(`Skill sync failed (non-fatal): ${err.message}`);
+  }
+
+  console.log('Login complete. Run /reload-plugins to activate synced skills.');
 }
 
 async function handleSync() {
-  const token = requireToken();
+  const token = await requireToken();
   const client = new AirlockClient(token);
 
   const skillCount = await syncSkills(client);
@@ -116,7 +122,7 @@ async function handleExecute(toolName, argsJson) {
     process.exit(1);
   }
 
-  const token = requireToken();
+  const token = await requireToken();
   const client = new AirlockClient(token);
   const toolArgs = argsJson ? JSON.parse(argsJson) : {};
 
@@ -206,16 +212,41 @@ function removePending(requestId) {
   }
 }
 
-function requireToken() {
+async function requireToken() {
   const token = readToken();
   if (!token) {
     console.error('Not authenticated. Run /airlock-login first.');
     process.exit(1);
   }
+
   if (isTokenExpired(token)) {
+    // Try refresh if we have a refresh token
+    if (token.refreshToken && token.tokenEndpoint && token.clientId) {
+      try {
+        console.log('Token expired, refreshing...');
+        const refreshed = await refreshAccessToken(token.tokenEndpoint, token.clientId, token.refreshToken);
+        const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
+        const updated = {
+          ...token,
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token || token.refreshToken,
+          idToken: refreshed.id_token || token.idToken,
+          expiresAt,
+        };
+        writeToken(updated);
+        console.log('Token refreshed.');
+        return updated;
+      } catch (err) {
+        console.error(`Token refresh failed: ${err.message}`);
+        console.error('Run /airlock-login to re-authenticate.');
+        process.exit(1);
+      }
+    }
+
     console.error('Token expired. Run /airlock-login to re-authenticate.');
     process.exit(1);
   }
+
   return token;
 }
 

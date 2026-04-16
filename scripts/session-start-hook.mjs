@@ -9,13 +9,14 @@
  * 3. Cache the org's policy snapshot for PreToolUse hints.
  */
 
-import { readToken, isTokenExpired } from './lib/token-store.mjs';
+import { readToken, writeToken, isTokenExpired } from './lib/token-store.mjs';
 import { AirlockClient } from './lib/airlock-client.mjs';
 import { syncSkills } from './lib/skill-sync.mjs';
 import { refreshPolicyCache } from './lib/policy-cache.mjs';
+import { refreshAccessToken } from './lib/oauth-pkce.mjs';
 
 async function main() {
-  const token = readToken();
+  let token = readToken();
 
   if (!token) {
     console.error('[airlock] No token found. Run /airlock-login to authenticate.');
@@ -23,8 +24,28 @@ async function main() {
   }
 
   if (isTokenExpired(token)) {
-    console.error('[airlock] Token expired. Run /airlock-login to re-authenticate.');
-    process.exit(0);
+    // Try automatic refresh
+    if (token.refreshToken && token.tokenEndpoint && token.clientId) {
+      try {
+        const refreshed = await refreshAccessToken(token.tokenEndpoint, token.clientId, token.refreshToken);
+        const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
+        token = {
+          ...token,
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token || token.refreshToken,
+          idToken: refreshed.id_token || token.idToken,
+          expiresAt,
+        };
+        writeToken(token);
+        console.log('[airlock] Token refreshed.');
+      } catch {
+        console.error('[airlock] Token expired and refresh failed. Run /airlock-login to re-authenticate.');
+        process.exit(0);
+      }
+    } else {
+      console.error('[airlock] Token expired. Run /airlock-login to re-authenticate.');
+      process.exit(0);
+    }
   }
 
   const client = new AirlockClient(token);
