@@ -197,6 +197,29 @@ describe('skill-sync logic', () => {
       expect(count).toBe(1);
     });
 
+    it('validates all attachments before any destructive filesystem change', async () => {
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      const refs = join(skillRoot, 'references');
+      mkdirSync(refs, { recursive: true });
+      writeFileSync(join(refs, 'existing.md'), 'prior sync');
+
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'a.md', type: 'reference', content: 'a' },
+              { id: 'a2', filename: 'a.md', type: 'reference', content: 'b' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+
+      expect(existsSync(join(refs, 'existing.md'))).toBe(true);
+    });
+
     it('throws on post-sanitisation filename collisions instead of silently dropping', async () => {
       await expect(
         syncSkills(

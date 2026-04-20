@@ -111,6 +111,25 @@ async function hydrateAttachments(client, attachmentStubs) {
  */
 function writeSkill(skillsDir, slug, skill) {
   const skillDir = join(skillsDir, slug);
+
+  const plannedWrites = [];
+  const seenTargets = new Map();
+  for (const attachment of skill.attachments || []) {
+    if (!attachment.filename) continue;
+    const safeName = basename(attachment.filename);
+    if (!safeName || safeName === '.' || safeName === '..') continue;
+    const subdir = attachmentTypeToDir(attachment.type);
+    const target = join(skillDir, subdir, safeName);
+    const previous = seenTargets.get(target);
+    if (previous) {
+      throw new Error(
+        `Duplicate attachment filename after sanitisation in skill '${slug}': '${attachment.filename}' conflicts with '${previous}'`
+      );
+    }
+    seenTargets.set(target, attachment.filename);
+    plannedWrites.push({ target, content: attachment.content ?? '' });
+  }
+
   mkdirSync(skillDir, { recursive: true });
 
   for (const subdir of ['scripts', 'references', 'assets']) {
@@ -128,22 +147,9 @@ function writeSkill(skillsDir, slug, skill) {
   const content = frontmatter + (skill.content || '');
   writeFileSync(join(skillDir, 'SKILL.md'), content);
 
-  const writtenTargets = new Set();
-  for (const attachment of skill.attachments || []) {
-    if (!attachment.filename) continue;
-    const safeName = basename(attachment.filename);
-    if (!safeName || safeName === '.' || safeName === '..') continue;
-    const subdir = attachmentTypeToDir(attachment.type);
-    const attachDir = join(skillDir, subdir);
-    const target = join(attachDir, safeName);
-    if (writtenTargets.has(target)) {
-      throw new Error(
-        `Duplicate attachment filename after sanitisation in skill '${slug}': ${attachment.filename}`
-      );
-    }
-    writtenTargets.add(target);
-    mkdirSync(attachDir, { recursive: true });
-    writeFileSync(target, attachment.content ?? '');
+  for (const { target, content: body } of plannedWrites) {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, body);
   }
 }
 
