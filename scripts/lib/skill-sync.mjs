@@ -42,12 +42,21 @@ export async function syncSkills(client) {
   const skillsDir = getSkillsDir();
   const oldManifest = readManifest(skillsDir);
   const newManifest = {};
+  const seenSlugs = new Map();
 
   for (const summary of skills) {
     if (!summary?.name) continue;
 
     const slug = slugify(summary.name);
     if (!slug) continue;
+
+    const firstName = seenSlugs.get(slug);
+    if (firstName) {
+      throw new Error(
+        `Duplicate skill slug after slugify: '${summary.name}' conflicts with '${firstName}' (both → '${slug}')`
+      );
+    }
+    seenSlugs.set(slug, summary.name);
 
     const fullSkill = await client.getSkill(summary.name);
     const attachments = await hydrateAttachments(client, fullSkill?.attachments || []);

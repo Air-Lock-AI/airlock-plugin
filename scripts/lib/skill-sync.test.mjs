@@ -235,6 +235,16 @@ describe('skill-sync logic', () => {
       expect(manifest).toEqual({});
     });
 
+    it('throws on duplicate slugs so one skill cannot silently overwrite another', async () => {
+      await expect(
+        syncSkills({
+          listSkills: async () => [{ name: 'Git Worktree' }, { name: 'git-worktree' }],
+          getSkill: async (name) => ({ id: name, name, content: 'body' }),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate skill slug/);
+    });
+
     it('prunes stale attachment files from prior syncs', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
