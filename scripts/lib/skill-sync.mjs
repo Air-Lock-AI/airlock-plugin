@@ -66,13 +66,15 @@ export async function syncSkills(client) {
     const contentHash = hash(JSON.stringify(skill));
     newManifest[slug] = { id: skill.id, hash: contentHash };
 
+    const plannedWrites = planAttachmentWrites(skillsDir, slug, skill);
+
     if (oldManifest[slug]?.hash !== contentHash) {
-      writeQueue.push({ slug, skill });
+      writeQueue.push({ slug, skill, plannedWrites });
     }
   }
 
-  for (const { slug, skill } of writeQueue) {
-    writeSkill(skillsDir, slug, skill);
+  for (const { slug, skill, plannedWrites } of writeQueue) {
+    writeSkill(skillsDir, slug, skill, plannedWrites);
   }
 
   for (const slug of Object.keys(oldManifest)) {
@@ -110,12 +112,14 @@ async function hydrateAttachments(client, attachmentStubs) {
 }
 
 /**
- * Write a single skill to disk as SKILL.md + attachments.
+ * Validate and plan attachment writes for a skill. Returns an array of
+ * `{target, content}` entries or throws on duplicate targets (case-insensitive,
+ * so `Readme.md` and `README.md` are treated as the same on platforms that
+ * would collide).
  */
-function writeSkill(skillsDir, slug, skill) {
+function planAttachmentWrites(skillsDir, slug, skill) {
   const skillDir = join(skillsDir, slug);
-
-  const plannedWrites = [];
+  const planned = [];
   const seenTargets = new Map();
   for (const attachment of skill.attachments || []) {
     if (!attachment.filename) continue;
@@ -123,15 +127,25 @@ function writeSkill(skillsDir, slug, skill) {
     if (!safeName || safeName === '.' || safeName === '..') continue;
     const subdir = attachmentTypeToDir(attachment.type);
     const target = join(skillDir, subdir, safeName);
-    const previous = seenTargets.get(target);
+    const key = target.toLowerCase();
+    const previous = seenTargets.get(key);
     if (previous) {
       throw new Error(
         `Duplicate attachment filename after sanitisation in skill '${slug}': '${attachment.filename}' conflicts with '${previous}'`
       );
     }
-    seenTargets.set(target, attachment.filename);
-    plannedWrites.push({ target, content: attachment.content ?? '' });
+    seenTargets.set(key, attachment.filename);
+    planned.push({ target, content: attachment.content ?? '' });
   }
+  return planned;
+}
+
+/**
+ * Write a single skill to disk. Attachments must already be validated via
+ * `planAttachmentWrites`.
+ */
+function writeSkill(skillsDir, slug, skill, plannedWrites) {
+  const skillDir = join(skillsDir, slug);
 
   mkdirSync(skillDir, { recursive: true });
 

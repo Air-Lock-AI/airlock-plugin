@@ -197,6 +197,54 @@ describe('skill-sync logic', () => {
       expect(count).toBe(1);
     });
 
+    it('treats case-only filename differences as collisions', async () => {
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'Readme.md', type: 'reference', content: 'a' },
+              { id: 'a2', filename: 'README.md', type: 'reference', content: 'b' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+    });
+
+    it('writes no skills when a later skill has a duplicate attachment filename', async () => {
+      const skills = [
+        {
+          id: 'first',
+          name: 'first-skill',
+          content: 'body',
+          attachments: [{ id: 'a1', filename: 'a.md', type: 'reference', content: 'ok' }],
+        },
+        {
+          id: 'second',
+          name: 'second-skill',
+          content: 'body',
+          attachments: [
+            { id: 'b1', filename: 'x.md', type: 'reference', content: '1' },
+            { id: 'b2', filename: 'x.md', type: 'reference', content: '2' },
+          ],
+        },
+      ];
+
+      await expect(
+        syncSkills({
+          listSkills: async () => skills.map((s) => ({ name: s.name })),
+          getSkill: async (name) => skills.find((s) => s.name === name),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate attachment filename/);
+
+      const skillsDir = join(testDir, 'skills');
+      expect(existsSync(join(skillsDir, 'first-skill'))).toBe(false);
+      expect(existsSync(join(skillsDir, 'second-skill'))).toBe(false);
+    });
+
     it('validates all attachments before any destructive filesystem change', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
