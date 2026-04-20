@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { syncSkills } from './skill-sync.mjs';
 
 // Test the pure functions from skill-sync by extracting their logic
 
@@ -99,6 +100,256 @@ describe('skill-sync logic', () => {
       expect(written).toContain('description: A test skill for validation');
       expect(written).toContain('## Instructions');
       expect(written).toContain('Do the thing.');
+    });
+  });
+
+  describe('syncSkills write path', () => {
+    let prevRoot;
+    beforeEach(() => {
+      prevRoot = process.env.CLAUDE_PLUGIN_ROOT;
+      process.env.CLAUDE_PLUGIN_ROOT = testDir;
+    });
+    afterEach(() => {
+      if (prevRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT;
+      else process.env.CLAUDE_PLUGIN_ROOT = prevRoot;
+    });
+
+    function fakeClient(skill) {
+      return {
+        listSkills: async () => [{ name: skill.name }],
+        getSkill: async () => skill,
+        readSkillAttachment: async (id) => {
+          const a = (skill.attachments || []).find((x) => x.id === id);
+          return a?.content ?? '';
+        },
+      };
+    }
+
+    it('strips path-traversal components from attachment filenames', async () => {
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          description: 'desc',
+          content: 'body',
+          attachments: [
+            { id: 'a1', filename: '../../../etc/passwd', type: 'reference', content: 'x' },
+          ],
+        })
+      );
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      expect(existsSync(join(skillRoot, 'references', 'passwd'))).toBe(true);
+      expect(existsSync(join(testDir, 'skills', 'etc'))).toBe(false);
+      expect(existsSync(join(testDir, 'etc'))).toBe(false);
+    });
+
+    it('skips attachments whose filename resolves to . or ..', async () => {
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          attachments: [
+            { id: 'a1', filename: '..', type: 'reference', content: 'x' },
+            { id: 'a2', filename: '.', type: 'reference', content: 'y' },
+          ],
+        })
+      );
+      const refs = join(testDir, 'skills', 'test-skill', 'references');
+      expect(existsSync(refs)).toBe(false);
+    });
+
+    it('skips skills whose slug would be empty', async () => {
+      await syncSkills(fakeClient({ id: '1', name: '???', content: 'body' }));
+      const manifest = JSON.parse(
+        readFileSync(join(testDir, 'skills', '.manifest.json'), 'utf-8')
+      );
+      expect(manifest).toEqual({});
+    });
+
+    it('ignores unsafe slugs in the old manifest during stale-prune', async () => {
+      const skillsDir = join(testDir, 'skills');
+      mkdirSync(skillsDir, { recursive: true });
+      writeFileSync(
+        join(skillsDir, '.manifest.json'),
+        JSON.stringify({ '../..': { id: 'evil', hash: 'x' }, 'foo/bar': { id: 'e2', hash: 'y' } })
+      );
+      const sentinel = join(testDir, 'sentinel');
+      mkdirSync(sentinel, { recursive: true });
+      writeFileSync(join(sentinel, 'keep.txt'), 'must survive');
+
+      await syncSkills(
+        fakeClient({ id: '1', name: 'test-skill', content: 'body', attachments: [] })
+      );
+      expect(existsSync(join(sentinel, 'keep.txt'))).toBe(true);
+    });
+
+    it('returns the count of actually-synced skills, not listed ones', async () => {
+      const client = {
+        listSkills: async () => [
+          { name: 'good-skill' },
+          { name: '???' }, // slug empty, skipped
+          { name: '' }, // no name, skipped
+        ],
+        getSkill: async (name) => ({ id: name, name, content: 'body' }),
+        readSkillAttachment: async () => '',
+      };
+      const count = await syncSkills(client);
+      expect(count).toBe(1);
+    });
+
+    it('treats case-only filename differences as collisions', async () => {
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'Readme.md', type: 'reference', content: 'a' },
+              { id: 'a2', filename: 'README.md', type: 'reference', content: 'b' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+    });
+
+    it('writes no skills when a later skill has a duplicate attachment filename', async () => {
+      const skills = [
+        {
+          id: 'first',
+          name: 'first-skill',
+          content: 'body',
+          attachments: [{ id: 'a1', filename: 'a.md', type: 'reference', content: 'ok' }],
+        },
+        {
+          id: 'second',
+          name: 'second-skill',
+          content: 'body',
+          attachments: [
+            { id: 'b1', filename: 'x.md', type: 'reference', content: '1' },
+            { id: 'b2', filename: 'x.md', type: 'reference', content: '2' },
+          ],
+        },
+      ];
+
+      await expect(
+        syncSkills({
+          listSkills: async () => skills.map((s) => ({ name: s.name })),
+          getSkill: async (name) => skills.find((s) => s.name === name),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate attachment filename/);
+
+      const skillsDir = join(testDir, 'skills');
+      expect(existsSync(join(skillsDir, 'first-skill'))).toBe(false);
+      expect(existsSync(join(skillsDir, 'second-skill'))).toBe(false);
+    });
+
+    it('validates all attachments before any destructive filesystem change', async () => {
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      const refs = join(skillRoot, 'references');
+      mkdirSync(refs, { recursive: true });
+      writeFileSync(join(refs, 'existing.md'), 'prior sync');
+
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'a.md', type: 'reference', content: 'a' },
+              { id: 'a2', filename: 'a.md', type: 'reference', content: 'b' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+
+      expect(existsSync(join(refs, 'existing.md'))).toBe(true);
+    });
+
+    it('throws on post-sanitisation filename collisions instead of silently dropping', async () => {
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'docs/readme.md', type: 'reference', content: 'first' },
+              { id: 'a2', filename: '../../readme.md', type: 'reference', content: 'second' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+    });
+
+    it('prunes all local skills when upstream returns an empty list', async () => {
+      const skillsDir = join(testDir, 'skills');
+      mkdirSync(skillsDir, { recursive: true });
+      writeFileSync(
+        join(skillsDir, '.manifest.json'),
+        JSON.stringify({ 'old-skill': { id: '1', hash: 'x' } })
+      );
+      const oldSkill = join(skillsDir, 'old-skill');
+      mkdirSync(oldSkill, { recursive: true });
+      writeFileSync(join(oldSkill, 'SKILL.md'), 'stale');
+
+      await syncSkills({
+        listSkills: async () => [],
+        getSkill: async () => ({}),
+        readSkillAttachment: async () => '',
+      });
+
+      expect(existsSync(oldSkill)).toBe(false);
+      const manifest = JSON.parse(readFileSync(join(skillsDir, '.manifest.json'), 'utf-8'));
+      expect(manifest).toEqual({});
+    });
+
+    it('throws on duplicate slugs so one skill cannot silently overwrite another', async () => {
+      await expect(
+        syncSkills({
+          listSkills: async () => [{ name: 'Git Worktree' }, { name: 'git-worktree' }],
+          getSkill: async (name) => ({ id: name, name, content: 'body' }),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate skill slug/);
+    });
+
+    it('writes no skills when a later slug collision aborts the sync', async () => {
+      await expect(
+        syncSkills({
+          listSkills: async () => [
+            { name: 'first-skill' },
+            { name: 'second-skill' },
+            { name: 'First Skill' }, // collides with first-skill
+          ],
+          getSkill: async (name) => ({ id: name, name, content: 'body' }),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate skill slug/);
+
+      const skillsDir = join(testDir, 'skills');
+      expect(existsSync(join(skillsDir, 'first-skill'))).toBe(false);
+      expect(existsSync(join(skillsDir, 'second-skill'))).toBe(false);
+    });
+
+    it('prunes stale attachment files from prior syncs', async () => {
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      const refs = join(skillRoot, 'references');
+      mkdirSync(refs, { recursive: true });
+      writeFileSync(join(refs, 'stale.md'), 'stale content');
+
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          content: 'body',
+          attachments: [{ id: 'a1', filename: 'fresh.md', type: 'reference', content: 'fresh' }],
+        })
+      );
+      expect(existsSync(join(refs, 'stale.md'))).toBe(false);
+      expect(existsSync(join(refs, 'fresh.md'))).toBe(true);
     });
   });
 

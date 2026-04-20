@@ -11,7 +11,8 @@
  */
 
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { basename, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 /**
@@ -23,11 +24,10 @@ function getSkillsDir() {
   if (pluginRoot) {
     return join(pluginRoot, 'skills');
   }
-  return join(dirname(new URL(import.meta.url).pathname), '..', '..', 'skills');
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills');
 }
 
-const SKILLS_DIR = getSkillsDir();
-const MANIFEST_FILE = join(SKILLS_DIR, '.manifest.json');
+const MANIFEST_FILENAME = '.manifest.json';
 
 /**
  * Sync skills from Airlock MCP to local disk.
@@ -36,61 +36,124 @@ const MANIFEST_FILE = join(SKILLS_DIR, '.manifest.json');
  * @param {import('./airlock-client.mjs').AirlockClient} client
  */
 export async function syncSkills(client) {
-  // Fetch all skills from Airlock
   const skillList = await client.listSkills();
   const skills = Array.isArray(skillList) ? skillList : skillList?.skills || [];
 
-  if (skills.length === 0) {
-    return 0;
-  }
-
-  // Load existing manifest for diffing
-  const oldManifest = readManifest();
+  const skillsDir = getSkillsDir();
+  const oldManifest = readManifest(skillsDir);
   const newManifest = {};
+  const seenSlugs = new Map();
+  const writeQueue = [];
 
-  for (const skill of skills) {
-    const slug = slugify(skill.name);
+  for (const summary of skills) {
+    if (!summary?.name) continue;
+
+    const slug = slugify(summary.name);
+    if (!slug) continue;
+
+    const firstName = seenSlugs.get(slug);
+    if (firstName) {
+      throw new Error(
+        `Duplicate skill slug after slugify: '${summary.name}' conflicts with '${firstName}' (both → '${slug}')`
+      );
+    }
+    seenSlugs.set(slug, summary.name);
+
+    const fullSkill = await client.getSkill(summary.name);
+    const attachments = await hydrateAttachments(client, fullSkill?.attachments || []);
+    const skill = { ...fullSkill, attachments };
+
     const contentHash = hash(JSON.stringify(skill));
     newManifest[slug] = { id: skill.id, hash: contentHash };
 
-    // Skip if unchanged
-    if (oldManifest[slug]?.hash === contentHash) {
-      continue;
-    }
+    const plannedWrites = planAttachmentWrites(skillsDir, slug, skill);
 
-    // Fetch full skill content if not already included
-    let fullSkill = skill;
-    if (!skill.content && skill.name) {
-      fullSkill = await client.getSkill(skill.name);
+    if (oldManifest[slug]?.hash !== contentHash) {
+      writeQueue.push({ slug, skill, plannedWrites });
     }
-
-    writeSkill(slug, fullSkill);
   }
 
-  // Prune stale skills
+  for (const { slug, skill, plannedWrites } of writeQueue) {
+    writeSkill(skillsDir, slug, skill, plannedWrites);
+  }
+
   for (const slug of Object.keys(oldManifest)) {
+    if (!isSafeSlug(slug)) continue;
     if (!newManifest[slug]) {
-      const skillDir = join(SKILLS_DIR, slug);
+      const skillDir = join(skillsDir, slug);
       if (existsSync(skillDir)) {
         rmSync(skillDir, { recursive: true });
       }
     }
   }
 
-  // Write new manifest
-  writeManifest(newManifest);
+  writeManifest(skillsDir, newManifest);
 
-  return skills.length;
+  return Object.keys(newManifest).length;
+}
+
+function isSafeSlug(slug) {
+  return typeof slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
 }
 
 /**
- * Write a single skill to disk as SKILL.md + attachments.
+ * Fetch the body of every attachment referenced by `activate_skill`.
+ * Returns attachments with a `content` field populated.
  */
-function writeSkill(slug, skill) {
-  const skillDir = join(SKILLS_DIR, slug);
+async function hydrateAttachments(client, attachmentStubs) {
+  const hydrated = [];
+  for (const stub of attachmentStubs) {
+    if (!stub?.id) continue;
+    const result = await client.readSkillAttachment(stub.id);
+    const content = typeof result === 'string' ? result : result?.content ?? '';
+    hydrated.push({ ...stub, content });
+  }
+  return hydrated;
+}
+
+/**
+ * Validate and plan attachment writes for a skill. Returns an array of
+ * `{target, content}` entries or throws on duplicate targets (case-insensitive,
+ * so `Readme.md` and `README.md` are treated as the same on platforms that
+ * would collide).
+ */
+function planAttachmentWrites(skillsDir, slug, skill) {
+  const skillDir = join(skillsDir, slug);
+  const planned = [];
+  const seenTargets = new Map();
+  for (const attachment of skill.attachments || []) {
+    if (!attachment.filename) continue;
+    const safeName = basename(attachment.filename);
+    if (!safeName || safeName === '.' || safeName === '..') continue;
+    const subdir = attachmentTypeToDir(attachment.type);
+    const target = join(skillDir, subdir, safeName);
+    const key = target.toLowerCase();
+    const previous = seenTargets.get(key);
+    if (previous) {
+      throw new Error(
+        `Duplicate attachment filename after sanitisation in skill '${slug}': '${attachment.filename}' conflicts with '${previous}'`
+      );
+    }
+    seenTargets.set(key, attachment.filename);
+    planned.push({ target, content: attachment.content ?? '' });
+  }
+  return planned;
+}
+
+/**
+ * Write a single skill to disk. Attachments must already be validated via
+ * `planAttachmentWrites`.
+ */
+function writeSkill(skillsDir, slug, skill, plannedWrites) {
+  const skillDir = join(skillsDir, slug);
+
   mkdirSync(skillDir, { recursive: true });
 
-  // Write SKILL.md with frontmatter
+  for (const subdir of ['scripts', 'references', 'assets']) {
+    const dir = join(skillDir, subdir);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+
   const frontmatter = [
     '---',
     `description: ${skill.description || skill.name}`,
@@ -101,13 +164,9 @@ function writeSkill(slug, skill) {
   const content = frontmatter + (skill.content || '');
   writeFileSync(join(skillDir, 'SKILL.md'), content);
 
-  // Write attachments
-  const attachments = skill.attachments || [];
-  for (const attachment of attachments) {
-    const subdir = attachmentTypeToDir(attachment.type);
-    const attachDir = join(skillDir, subdir);
-    mkdirSync(attachDir, { recursive: true });
-    writeFileSync(join(attachDir, attachment.filename), attachment.content);
+  for (const { target, content: body } of plannedWrites) {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, body);
   }
 }
 
@@ -127,17 +186,17 @@ function attachmentTypeToDir(type) {
   }
 }
 
-function readManifest() {
+function readManifest(skillsDir) {
   try {
-    return JSON.parse(readFileSync(MANIFEST_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(join(skillsDir, MANIFEST_FILENAME), 'utf-8'));
   } catch {
     return {};
   }
 }
 
-function writeManifest(manifest) {
-  mkdirSync(SKILLS_DIR, { recursive: true });
-  writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+function writeManifest(skillsDir, manifest) {
+  mkdirSync(skillsDir, { recursive: true });
+  writeFileSync(join(skillsDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2));
 }
 
 function slugify(name) {

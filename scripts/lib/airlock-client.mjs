@@ -11,6 +11,7 @@ const DEFAULT_BASE_URL = 'https://mcp.air-lock.ai';
 export class AirlockClient {
   #token;
   #baseUrl;
+  #skillsToolName;
 
   /**
    * @param {object} token - Token object from token-store (must have .accessToken)
@@ -61,20 +62,52 @@ export class AirlockClient {
   }
 
   /**
-   * List available skills via the MCP meta-tools.
+   * List available skills.
+   *
+   * `list_skills` is a namespaced tool on the customer's airlock-management
+   * service (e.g. `airlock_management/list_skills`), NOT a top-level meta-tool.
+   * The service slug varies per org, so we discover the full name via
+   * `search_tools` and invoke it via `execute_tool`.
    */
   async listSkills() {
-    // TODO: confirm the exact meta-tool name from skill-tools.ts
-    // This might be 'activate_skill' with a list action, or a separate tool
-    return this.callTool('activate_skill', { action: 'list' });
+    const toolName = await this.#resolveSkillsToolName();
+    return this.callTool('execute_tool', { tool: toolName, arguments: {} });
+  }
+
+  async #resolveSkillsToolName() {
+    if (this.#skillsToolName) return this.#skillsToolName;
+
+    const results = await this.callTool('search_tools', { query: 'list_skills' });
+    const tools = Array.isArray(results) ? results : results?.tools || [];
+
+    const match = tools
+      .map((t) => (typeof t === 'string' ? t : t?.name || t?.tool || ''))
+      .find((name) => name.endsWith('/list_skills'));
+
+    if (!match) {
+      throw new Error(
+        "Couldn't find a `list_skills` tool via search_tools — is the airlock management service connected to this org?"
+      );
+    }
+
+    this.#skillsToolName = match;
+    return match;
   }
 
   /**
-   * Fetch a single skill's full content and attachments.
+   * Fetch a single skill's content and attachment metadata via `activate_skill`.
+   * Attachments come back as `{id, filename, type}` — hydrate their bodies with
+   * `readSkillAttachment(id)`.
    */
   async getSkill(skillName) {
-    // TODO: confirm the exact meta-tool name and params
     return this.callTool('activate_skill', { name: skillName });
+  }
+
+  /**
+   * Fetch the body of a single skill attachment by ID.
+   */
+  async readSkillAttachment(attachmentId) {
+    return this.callTool('read_skill_attachment', { attachment_id: attachmentId });
   }
 
   /**
@@ -104,20 +137,26 @@ export class AirlockClient {
 
   /**
    * Check the status of a pending approval request.
+   *
+   * No MCP meta-tool exposes approval status today — Airlock's confirmed surface
+   * is `activate_skill`, `read_skill_attachment`, `list_services`, `search_tools`,
+   * `describe_tools`, `execute_tool`. Until a real REST/meta-tool is wired up,
+   * we return `{state: 'pending'}` so callers (stop-hook, approval poller)
+   * degrade gracefully: requests stay in the pending file, pollers hit their
+   * own timeout, nothing crashes.
    */
   async getApprovalStatus(requestId) {
-    // TODO: confirm the exact endpoint / meta-tool for approval status
-    return this.callTool('execute_tool', {
-      tool: '_airlock/approval_status',
-      arguments: { requestId },
-    });
+    return { state: 'pending', requestId };
   }
 
   /**
    * Get the org's policy rules (for local caching in PreToolUse).
+   *
+   * No MCP meta-tool exposes policies today (`list_services` returns services,
+   * not policy rules). Returning `null` lets `refreshPolicyCache` write an
+   * empty snapshot and `matchPolicy` correctly produce no hints.
    */
   async getPolicies() {
-    // TODO: confirm the exact meta-tool for policy listing
-    return this.callTool('list_services', {});
+    return null;
   }
 }

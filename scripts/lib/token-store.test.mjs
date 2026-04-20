@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 
 describe('token-store logic', () => {
   const testDir = join(tmpdir(), `airlock-test-${Date.now()}`);
-  const tokenFile = join(testDir, 'token.json');
 
   beforeEach(() => {
     mkdirSync(testDir, { recursive: true });
