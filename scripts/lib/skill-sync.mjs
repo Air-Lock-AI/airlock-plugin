@@ -43,6 +43,7 @@ export async function syncSkills(client) {
   const oldManifest = readManifest(skillsDir);
   const newManifest = {};
   const seenSlugs = new Map();
+  const writeQueue = [];
 
   for (const summary of skills) {
     if (!summary?.name) continue;
@@ -65,10 +66,12 @@ export async function syncSkills(client) {
     const contentHash = hash(JSON.stringify(skill));
     newManifest[slug] = { id: skill.id, hash: contentHash };
 
-    if (oldManifest[slug]?.hash === contentHash) {
-      continue;
+    if (oldManifest[slug]?.hash !== contentHash) {
+      writeQueue.push({ slug, skill });
     }
+  }
 
+  for (const { slug, skill } of writeQueue) {
     writeSkill(skillsDir, slug, skill);
   }
 

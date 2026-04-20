@@ -268,6 +268,24 @@ describe('skill-sync logic', () => {
       ).rejects.toThrow(/Duplicate skill slug/);
     });
 
+    it('writes no skills when a later slug collision aborts the sync', async () => {
+      await expect(
+        syncSkills({
+          listSkills: async () => [
+            { name: 'first-skill' },
+            { name: 'second-skill' },
+            { name: 'First Skill' }, // collides with first-skill
+          ],
+          getSkill: async (name) => ({ id: name, name, content: 'body' }),
+          readSkillAttachment: async () => '',
+        })
+      ).rejects.toThrow(/Duplicate skill slug/);
+
+      const skillsDir = join(testDir, 'skills');
+      expect(existsSync(join(skillsDir, 'first-skill'))).toBe(false);
+      expect(existsSync(join(skillsDir, 'second-skill'))).toBe(false);
+    });
+
     it('prunes stale attachment files from prior syncs', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
