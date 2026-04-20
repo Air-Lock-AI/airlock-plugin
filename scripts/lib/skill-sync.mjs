@@ -36,7 +36,6 @@ const MANIFEST_FILE = join(SKILLS_DIR, '.manifest.json');
  * @param {import('./airlock-client.mjs').AirlockClient} client
  */
 export async function syncSkills(client) {
-  // Fetch all skills from Airlock
   const skillList = await client.listSkills();
   const skills = Array.isArray(skillList) ? skillList : skillList?.skills || [];
 
@@ -44,30 +43,27 @@ export async function syncSkills(client) {
     return 0;
   }
 
-  // Load existing manifest for diffing
   const oldManifest = readManifest();
   const newManifest = {};
 
-  for (const skill of skills) {
-    const slug = slugify(skill.name);
+  for (const summary of skills) {
+    if (!summary?.name) continue;
+
+    const slug = slugify(summary.name);
+    const fullSkill = await client.getSkill(summary.name);
+    const attachments = await hydrateAttachments(client, fullSkill?.attachments || []);
+    const skill = { ...fullSkill, attachments };
+
     const contentHash = hash(JSON.stringify(skill));
     newManifest[slug] = { id: skill.id, hash: contentHash };
 
-    // Skip if unchanged
     if (oldManifest[slug]?.hash === contentHash) {
       continue;
     }
 
-    // Fetch full skill content if not already included
-    let fullSkill = skill;
-    if (!skill.content && skill.name) {
-      fullSkill = await client.getSkill(skill.name);
-    }
-
-    writeSkill(slug, fullSkill);
+    writeSkill(slug, skill);
   }
 
-  // Prune stale skills
   for (const slug of Object.keys(oldManifest)) {
     if (!newManifest[slug]) {
       const skillDir = join(SKILLS_DIR, slug);
@@ -77,10 +73,24 @@ export async function syncSkills(client) {
     }
   }
 
-  // Write new manifest
   writeManifest(newManifest);
 
   return skills.length;
+}
+
+/**
+ * Fetch the body of every attachment referenced by `activate_skill`.
+ * Returns attachments with a `content` field populated.
+ */
+async function hydrateAttachments(client, attachmentStubs) {
+  const hydrated = [];
+  for (const stub of attachmentStubs) {
+    if (!stub?.id) continue;
+    const result = await client.readSkillAttachment(stub.id);
+    const content = typeof result === 'string' ? result : result?.content ?? '';
+    hydrated.push({ ...stub, content });
+  }
+  return hydrated;
 }
 
 /**
@@ -90,7 +100,6 @@ function writeSkill(slug, skill) {
   const skillDir = join(SKILLS_DIR, slug);
   mkdirSync(skillDir, { recursive: true });
 
-  // Write SKILL.md with frontmatter
   const frontmatter = [
     '---',
     `description: ${skill.description || skill.name}`,
@@ -101,13 +110,12 @@ function writeSkill(slug, skill) {
   const content = frontmatter + (skill.content || '');
   writeFileSync(join(skillDir, 'SKILL.md'), content);
 
-  // Write attachments
-  const attachments = skill.attachments || [];
-  for (const attachment of attachments) {
+  for (const attachment of skill.attachments || []) {
+    if (!attachment.filename) continue;
     const subdir = attachmentTypeToDir(attachment.type);
     const attachDir = join(skillDir, subdir);
     mkdirSync(attachDir, { recursive: true });
-    writeFileSync(join(attachDir, attachment.filename), attachment.content);
+    writeFileSync(join(attachDir, attachment.filename), attachment.content ?? '');
   }
 }
 
