@@ -67,7 +67,7 @@ export async function syncSkills(client) {
   }
 
   for (const slug of Object.keys(oldManifest)) {
-    if (!slug) continue;
+    if (!isSafeSlug(slug)) continue;
     if (!newManifest[slug]) {
       const skillDir = join(skillsDir, slug);
       if (existsSync(skillDir)) {
@@ -78,7 +78,11 @@ export async function syncSkills(client) {
 
   writeManifest(skillsDir, newManifest);
 
-  return skills.length;
+  return Object.keys(newManifest).length;
+}
+
+function isSafeSlug(slug) {
+  return typeof slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
 }
 
 /**

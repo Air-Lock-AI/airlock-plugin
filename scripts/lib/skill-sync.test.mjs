@@ -166,6 +166,37 @@ describe('skill-sync logic', () => {
       expect(manifest).toEqual({});
     });
 
+    it('ignores unsafe slugs in the old manifest during stale-prune', async () => {
+      const skillsDir = join(testDir, 'skills');
+      mkdirSync(skillsDir, { recursive: true });
+      writeFileSync(
+        join(skillsDir, '.manifest.json'),
+        JSON.stringify({ '../..': { id: 'evil', hash: 'x' }, 'foo/bar': { id: 'e2', hash: 'y' } })
+      );
+      const sentinel = join(testDir, 'sentinel');
+      mkdirSync(sentinel, { recursive: true });
+      writeFileSync(join(sentinel, 'keep.txt'), 'must survive');
+
+      await syncSkills(
+        fakeClient({ id: '1', name: 'test-skill', content: 'body', attachments: [] })
+      );
+      expect(existsSync(join(sentinel, 'keep.txt'))).toBe(true);
+    });
+
+    it('returns the count of actually-synced skills, not listed ones', async () => {
+      const client = {
+        listSkills: async () => [
+          { name: 'good-skill' },
+          { name: '???' }, // slug empty, skipped
+          { name: '' }, // no name, skipped
+        ],
+        getSkill: async (name) => ({ id: name, name, content: 'body' }),
+        readSkillAttachment: async () => '',
+      };
+      const count = await syncSkills(client);
+      expect(count).toBe(1);
+    });
+
     it('prunes stale attachment files from prior syncs', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
