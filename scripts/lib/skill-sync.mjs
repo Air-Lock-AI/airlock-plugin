@@ -11,7 +11,7 @@
  */
 
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { basename, join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 /**
@@ -100,6 +100,11 @@ function writeSkill(slug, skill) {
   const skillDir = join(SKILLS_DIR, slug);
   mkdirSync(skillDir, { recursive: true });
 
+  for (const subdir of ['scripts', 'references', 'assets']) {
+    const dir = join(skillDir, subdir);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+
   const frontmatter = [
     '---',
     `description: ${skill.description || skill.name}`,
@@ -112,10 +117,12 @@ function writeSkill(slug, skill) {
 
   for (const attachment of skill.attachments || []) {
     if (!attachment.filename) continue;
+    const safeName = basename(attachment.filename);
+    if (!safeName || safeName === '.' || safeName === '..') continue;
     const subdir = attachmentTypeToDir(attachment.type);
     const attachDir = join(skillDir, subdir);
     mkdirSync(attachDir, { recursive: true });
-    writeFileSync(join(attachDir, attachment.filename), attachment.content ?? '');
+    writeFileSync(join(attachDir, safeName), attachment.content ?? '');
   }
 }
 

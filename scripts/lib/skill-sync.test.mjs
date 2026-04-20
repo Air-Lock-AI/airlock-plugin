@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // Test the pure functions from skill-sync by extracting their logic
@@ -99,6 +99,29 @@ describe('skill-sync logic', () => {
       expect(written).toContain('description: A test skill for validation');
       expect(written).toContain('## Instructions');
       expect(written).toContain('Do the thing.');
+    });
+  });
+
+  describe('attachment filename sanitization', () => {
+    function safeName(filename) {
+      const name = basename(filename);
+      if (!name || name === '.' || name === '..') return null;
+      return name;
+    }
+
+    it('strips path components from traversal attempts', () => {
+      expect(safeName('../../../etc/passwd')).toBe('passwd');
+      expect(safeName('foo/bar.sh')).toBe('bar.sh');
+    });
+
+    it('rejects pure-traversal filenames', () => {
+      expect(safeName('..')).toBeNull();
+      expect(safeName('.')).toBeNull();
+    });
+
+    it('preserves safe filenames', () => {
+      expect(safeName('script.sh')).toBe('script.sh');
+      expect(safeName('reference.md')).toBe('reference.md');
     });
   });
 
