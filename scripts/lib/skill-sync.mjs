@@ -12,6 +12,7 @@
 
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { basename, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 /**
@@ -23,7 +24,7 @@ function getSkillsDir() {
   if (pluginRoot) {
     return join(pluginRoot, 'skills');
   }
-  return join(dirname(new URL(import.meta.url).pathname), '..', '..', 'skills');
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills');
 }
 
 const MANIFEST_FILENAME = '.manifest.json';
@@ -122,14 +123,22 @@ function writeSkill(skillsDir, slug, skill) {
   const content = frontmatter + (skill.content || '');
   writeFileSync(join(skillDir, 'SKILL.md'), content);
 
+  const writtenTargets = new Set();
   for (const attachment of skill.attachments || []) {
     if (!attachment.filename) continue;
     const safeName = basename(attachment.filename);
     if (!safeName || safeName === '.' || safeName === '..') continue;
     const subdir = attachmentTypeToDir(attachment.type);
     const attachDir = join(skillDir, subdir);
+    const target = join(attachDir, safeName);
+    if (writtenTargets.has(target)) {
+      throw new Error(
+        `Duplicate attachment filename after sanitisation in skill '${slug}': ${attachment.filename}`
+      );
+    }
+    writtenTargets.add(target);
     mkdirSync(attachDir, { recursive: true });
-    writeFileSync(join(attachDir, safeName), attachment.content ?? '');
+    writeFileSync(target, attachment.content ?? '');
   }
 }
 

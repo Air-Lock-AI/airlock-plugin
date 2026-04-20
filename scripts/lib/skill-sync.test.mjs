@@ -197,6 +197,22 @@ describe('skill-sync logic', () => {
       expect(count).toBe(1);
     });
 
+    it('throws on post-sanitisation filename collisions instead of silently dropping', async () => {
+      await expect(
+        syncSkills(
+          fakeClient({
+            id: '1',
+            name: 'test-skill',
+            content: 'body',
+            attachments: [
+              { id: 'a1', filename: 'docs/readme.md', type: 'reference', content: 'first' },
+              { id: 'a2', filename: '../../readme.md', type: 'reference', content: 'second' },
+            ],
+          })
+        )
+      ).rejects.toThrow(/Duplicate attachment filename/);
+    });
+
     it('prunes stale attachment files from prior syncs', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
