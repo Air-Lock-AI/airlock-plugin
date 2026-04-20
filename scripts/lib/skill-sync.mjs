@@ -26,8 +26,7 @@ function getSkillsDir() {
   return join(dirname(new URL(import.meta.url).pathname), '..', '..', 'skills');
 }
 
-const SKILLS_DIR = getSkillsDir();
-const MANIFEST_FILE = join(SKILLS_DIR, '.manifest.json');
+const MANIFEST_FILENAME = '.manifest.json';
 
 /**
  * Sync skills from Airlock MCP to local disk.
@@ -43,13 +42,16 @@ export async function syncSkills(client) {
     return 0;
   }
 
-  const oldManifest = readManifest();
+  const skillsDir = getSkillsDir();
+  const oldManifest = readManifest(skillsDir);
   const newManifest = {};
 
   for (const summary of skills) {
     if (!summary?.name) continue;
 
     const slug = slugify(summary.name);
+    if (!slug) continue;
+
     const fullSkill = await client.getSkill(summary.name);
     const attachments = await hydrateAttachments(client, fullSkill?.attachments || []);
     const skill = { ...fullSkill, attachments };
@@ -61,19 +63,20 @@ export async function syncSkills(client) {
       continue;
     }
 
-    writeSkill(slug, skill);
+    writeSkill(skillsDir, slug, skill);
   }
 
   for (const slug of Object.keys(oldManifest)) {
+    if (!slug) continue;
     if (!newManifest[slug]) {
-      const skillDir = join(SKILLS_DIR, slug);
+      const skillDir = join(skillsDir, slug);
       if (existsSync(skillDir)) {
         rmSync(skillDir, { recursive: true });
       }
     }
   }
 
-  writeManifest(newManifest);
+  writeManifest(skillsDir, newManifest);
 
   return skills.length;
 }
@@ -96,8 +99,8 @@ async function hydrateAttachments(client, attachmentStubs) {
 /**
  * Write a single skill to disk as SKILL.md + attachments.
  */
-function writeSkill(slug, skill) {
-  const skillDir = join(SKILLS_DIR, slug);
+function writeSkill(skillsDir, slug, skill) {
+  const skillDir = join(skillsDir, slug);
   mkdirSync(skillDir, { recursive: true });
 
   for (const subdir of ['scripts', 'references', 'assets']) {
@@ -142,17 +145,17 @@ function attachmentTypeToDir(type) {
   }
 }
 
-function readManifest() {
+function readManifest(skillsDir) {
   try {
-    return JSON.parse(readFileSync(MANIFEST_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(join(skillsDir, MANIFEST_FILENAME), 'utf-8'));
   } catch {
     return {};
   }
 }
 
-function writeManifest(manifest) {
-  mkdirSync(SKILLS_DIR, { recursive: true });
-  writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+function writeManifest(skillsDir, manifest) {
+  mkdirSync(skillsDir, { recursive: true });
+  writeFileSync(join(skillsDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2));
 }
 
 function slugify(name) {

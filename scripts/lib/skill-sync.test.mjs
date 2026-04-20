@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { syncSkills } from './skill-sync.mjs';
 
 // Test the pure functions from skill-sync by extracting their logic
 
@@ -102,26 +103,85 @@ describe('skill-sync logic', () => {
     });
   });
 
-  describe('attachment filename sanitization', () => {
-    function safeName(filename) {
-      const name = basename(filename);
-      if (!name || name === '.' || name === '..') return null;
-      return name;
+  describe('syncSkills write path', () => {
+    let prevRoot;
+    beforeEach(() => {
+      prevRoot = process.env.CLAUDE_PLUGIN_ROOT;
+      process.env.CLAUDE_PLUGIN_ROOT = testDir;
+    });
+    afterEach(() => {
+      if (prevRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT;
+      else process.env.CLAUDE_PLUGIN_ROOT = prevRoot;
+    });
+
+    function fakeClient(skill) {
+      return {
+        listSkills: async () => [{ name: skill.name }],
+        getSkill: async () => skill,
+        readSkillAttachment: async (id) => {
+          const a = (skill.attachments || []).find((x) => x.id === id);
+          return a?.content ?? '';
+        },
+      };
     }
 
-    it('strips path components from traversal attempts', () => {
-      expect(safeName('../../../etc/passwd')).toBe('passwd');
-      expect(safeName('foo/bar.sh')).toBe('bar.sh');
+    it('strips path-traversal components from attachment filenames', async () => {
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          description: 'desc',
+          content: 'body',
+          attachments: [
+            { id: 'a1', filename: '../../../etc/passwd', type: 'reference', content: 'x' },
+          ],
+        })
+      );
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      expect(existsSync(join(skillRoot, 'references', 'passwd'))).toBe(true);
+      expect(existsSync(join(testDir, 'skills', 'etc'))).toBe(false);
+      expect(existsSync(join(testDir, 'etc'))).toBe(false);
     });
 
-    it('rejects pure-traversal filenames', () => {
-      expect(safeName('..')).toBeNull();
-      expect(safeName('.')).toBeNull();
+    it('skips attachments whose filename resolves to . or ..', async () => {
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          attachments: [
+            { id: 'a1', filename: '..', type: 'reference', content: 'x' },
+            { id: 'a2', filename: '.', type: 'reference', content: 'y' },
+          ],
+        })
+      );
+      const refs = join(testDir, 'skills', 'test-skill', 'references');
+      expect(existsSync(refs)).toBe(false);
     });
 
-    it('preserves safe filenames', () => {
-      expect(safeName('script.sh')).toBe('script.sh');
-      expect(safeName('reference.md')).toBe('reference.md');
+    it('skips skills whose slug would be empty', async () => {
+      await syncSkills(fakeClient({ id: '1', name: '???', content: 'body' }));
+      const manifest = JSON.parse(
+        readFileSync(join(testDir, 'skills', '.manifest.json'), 'utf-8')
+      );
+      expect(manifest).toEqual({});
+    });
+
+    it('prunes stale attachment files from prior syncs', async () => {
+      const skillRoot = join(testDir, 'skills', 'test-skill');
+      const refs = join(skillRoot, 'references');
+      mkdirSync(refs, { recursive: true });
+      writeFileSync(join(refs, 'stale.md'), 'stale content');
+
+      await syncSkills(
+        fakeClient({
+          id: '1',
+          name: 'test-skill',
+          content: 'body',
+          attachments: [{ id: 'a1', filename: 'fresh.md', type: 'reference', content: 'fresh' }],
+        })
+      );
+      expect(existsSync(join(refs, 'stale.md'))).toBe(false);
+      expect(existsSync(join(refs, 'fresh.md'))).toBe(true);
     });
   });
 
