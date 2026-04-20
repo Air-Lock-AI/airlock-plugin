@@ -39,10 +39,6 @@ export async function syncSkills(client) {
   const skillList = await client.listSkills();
   const skills = Array.isArray(skillList) ? skillList : skillList?.skills || [];
 
-  if (skills.length === 0) {
-    return 0;
-  }
-
   const skillsDir = getSkillsDir();
   const oldManifest = readManifest(skillsDir);
   const newManifest = {};

@@ -213,6 +213,28 @@ describe('skill-sync logic', () => {
       ).rejects.toThrow(/Duplicate attachment filename/);
     });
 
+    it('prunes all local skills when upstream returns an empty list', async () => {
+      const skillsDir = join(testDir, 'skills');
+      mkdirSync(skillsDir, { recursive: true });
+      writeFileSync(
+        join(skillsDir, '.manifest.json'),
+        JSON.stringify({ 'old-skill': { id: '1', hash: 'x' } })
+      );
+      const oldSkill = join(skillsDir, 'old-skill');
+      mkdirSync(oldSkill, { recursive: true });
+      writeFileSync(join(oldSkill, 'SKILL.md'), 'stale');
+
+      await syncSkills({
+        listSkills: async () => [],
+        getSkill: async () => ({}),
+        readSkillAttachment: async () => '',
+      });
+
+      expect(existsSync(oldSkill)).toBe(false);
+      const manifest = JSON.parse(readFileSync(join(skillsDir, '.manifest.json'), 'utf-8'));
+      expect(manifest).toEqual({});
+    });
+
     it('prunes stale attachment files from prior syncs', async () => {
       const skillRoot = join(testDir, 'skills', 'test-skill');
       const refs = join(skillRoot, 'references');
